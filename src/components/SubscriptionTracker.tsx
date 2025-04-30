@@ -15,16 +15,7 @@ interface Subscription {
 }
 
 const SubscriptionTracker: React.FC = () => {
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>(() => {
-    const saved = localStorage.getItem('subscriptions');
-    return saved ? JSON.parse(saved, (key, value) => {
-      if (key === 'nextBilling' || key === 'trialEndDate') {
-        return value ? new Date(value) : null;
-      }
-      return value;
-    }) : [];
-  });
-
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const today = new Date();
   const formattedToday = format(today, 'yyyy-MM-dd');
 
@@ -36,22 +27,32 @@ const SubscriptionTracker: React.FC = () => {
     category: 'Entertainment',
     nextBilling: formattedToday,
     isFreeTrial: false,
-    trialDays: '30' // Default 30-day trial
+    trialDays: '30'
   });
 
   const [displayCurrency, setDisplayCurrency] = useState('₪');
-  const [categories, setCategories] = useState<string[]>(() => {
-    const saved = localStorage.getItem('categories');
-    return saved ? JSON.parse(saved) : ['Entertainment', 'Productivity', 'Other'];
-  });
+  const [categories, setCategories] = useState<string[]>(['Entertainment', 'Productivity', 'Other']);
 
+  // Fetch subscriptions on component mount
   useEffect(() => {
-    localStorage.setItem('subscriptions', JSON.stringify(subscriptions));
-  }, [subscriptions]);
-
-  useEffect(() => {
-    localStorage.setItem('categories', JSON.stringify(categories));
-  }, [categories]);
+    const fetchSubscriptions = async () => {
+      try {
+        const response = await fetch('/api/subscriptions');
+        if (!response.ok) throw new Error('Failed to fetch subscriptions');
+        const data = await response.json();
+        // Convert date strings back to Date objects
+        const parsedData = data.map((sub: any) => ({
+          ...sub,
+          nextBilling: new Date(sub.nextBilling),
+          trialEndDate: sub.trialEndDate ? new Date(sub.trialEndDate) : undefined
+        }));
+        setSubscriptions(parsedData);
+      } catch (error) {
+        console.error('Error fetching subscriptions:', error);
+      }
+    };
+    fetchSubscriptions();
+  }, []);
 
   const convertCurrency = (amount: number, from: string, to: string): number => {
     const rates = {
@@ -75,7 +76,7 @@ const SubscriptionTracker: React.FC = () => {
     return format(new Date(date), 'dd/MM/yyyy');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSubscription.name || !newSubscription.cost) return;
 
@@ -84,7 +85,7 @@ const SubscriptionTracker: React.FC = () => {
 
     if (newSubscription.isFreeTrial) {
       trialEndDate = addDays(nextBillingDate, parseInt(newSubscription.trialDays || '30'));
-      nextBillingDate = trialEndDate; // Set next billing to after trial period
+      nextBillingDate = trialEndDate;
     }
 
     const subscription: Subscription = {
@@ -99,21 +100,45 @@ const SubscriptionTracker: React.FC = () => {
       trialEndDate: trialEndDate
     };
 
-    setSubscriptions([...subscriptions, subscription]);
-    setNewSubscription({
-      name: '',
-      cost: '',
-      currency: '€',
-      billingCycle: 'Monthly',
-      category: 'Entertainment',
-      nextBilling: formattedToday,
-      isFreeTrial: false,
-      trialDays: '30'
-    });
+    try {
+      const response = await fetch('/api/subscriptions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(subscription),
+      });
+
+      if (!response.ok) throw new Error('Failed to add subscription');
+      
+      setSubscriptions([...subscriptions, subscription]);
+      setNewSubscription({
+        name: '',
+        cost: '',
+        currency: '€',
+        billingCycle: 'Monthly',
+        category: 'Entertainment',
+        nextBilling: formattedToday,
+        isFreeTrial: false,
+        trialDays: '30'
+      });
+    } catch (error) {
+      console.error('Error adding subscription:', error);
+    }
   };
 
-  const deleteSubscription = (id: string) => {
-    setSubscriptions(subscriptions.filter(sub => sub.id !== id));
+  const deleteSubscription = async (id: string) => {
+    try {
+      const response = await fetch(`/api/subscriptions?id=${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to delete subscription');
+      
+      setSubscriptions(subscriptions.filter(sub => sub.id !== id));
+    } catch (error) {
+      console.error('Error deleting subscription:', error);
+    }
   };
 
   const addCategory = () => {
@@ -141,19 +166,37 @@ const SubscriptionTracker: React.FC = () => {
     linkElement.click();
   };
 
-  const importData = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importData = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const importedData = JSON.parse(e.target?.result as string);
-          setSubscriptions(importedData.map((sub: any) => ({
+          // Update each subscription via API
+          for (const sub of importedData) {
+            await fetch('/api/subscriptions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                ...sub,
+                nextBilling: new Date(sub.nextBilling),
+                trialEndDate: sub.trialEndDate ? new Date(sub.trialEndDate) : undefined
+              }),
+            });
+          }
+          // Refresh subscriptions from server
+          const response = await fetch('/api/subscriptions');
+          const data = await response.json();
+          setSubscriptions(data.map((sub: any) => ({
             ...sub,
             nextBilling: new Date(sub.nextBilling),
             trialEndDate: sub.trialEndDate ? new Date(sub.trialEndDate) : undefined
           })));
         } catch (error) {
+          console.error('Error importing data:', error);
           alert('Error importing data. Please check the file format.');
         }
       };
